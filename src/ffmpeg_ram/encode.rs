@@ -6,7 +6,7 @@ use crate::{
     ffmpeg::{init_av_log, AVPixelFormat},
     ffmpeg_ram::{
         ffmpeg_linesize_offset_length, ffmpeg_ram_encode, ffmpeg_ram_free_encoder,
-        ffmpeg_ram_new_encoder, ffmpeg_ram_set_bitrate, CodecInfo, AV_NUM_DATA_POINTERS,
+        ffmpeg_ram_new_encoder, ffmpeg_ram_set_bitrate, ffmpeg_ram_set_framerate, CodecInfo, AV_NUM_DATA_POINTERS,
     },
 };
 use log::trace;
@@ -150,6 +150,16 @@ impl Encoder {
         }
     }
 
+    pub fn set_framerate(&mut self, fps: i32) -> Result<(), ()> {
+        let ret = unsafe { ffmpeg_ram_set_framerate(self.codec, fps) };
+        if ret == 0 {
+            self.ctx.fps = fps;
+            Ok(())
+        } else {
+            Err(())
+        }
+    }
+
     pub fn format_from_name(name: String) -> Result<DataFormat, ()> {
         if name.contains("h264") {
             return Ok(H264);
@@ -260,6 +270,15 @@ impl Encoder {
                 //     priority: Priority::Good as _,
                 //     ..Default::default()
                 // });
+                // NearDesk: opt-in for the hevc_vaapi investigation (NEARDESK.md)
+                if std::env::var("NEARDESK_ENC_HEVC_VAAPI").map_or(false, |v| v == "1") {
+                    codecs.push(CodecInfo {
+                        name: "hevc_vaapi".to_owned(),
+                        format: H265,
+                        priority: Priority::Good as _,
+                        ..Default::default()
+                    });
+                }
             }
         }
 

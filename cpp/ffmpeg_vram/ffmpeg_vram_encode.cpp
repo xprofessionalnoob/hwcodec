@@ -83,6 +83,12 @@ public:
   int32_t framerate_;
   int32_t gop_;
 
+  // low-latency open attempt, see util_encode::open_attempt
+  int tried_ = 0;
+  bool legacy_ = false;
+  bool no_low_power_ = false;
+  bool open_failed_ = false;
+
   const int align_ = 0;
   const bool full_range_ = false;
   const bool bt709_ = false;
@@ -142,6 +148,9 @@ public:
     // util_encode::set_quality(c_->priv_data, encoder_->name_, Quality_Default);
     util_encode::set_rate_control(c_, encoder_->name_, RC_CBR, -1);
     util_encode::set_others(c_->priv_data, encoder_->name_);
+    util_encode::set_low_latency(c_, encoder_->name_, framerate_, legacy_,
+                                 nullptr, no_low_power_);
+    util_encode::apply_env_overrides(c_, encoder_->name_);
 
     hw_device_ctx_ = av_hwdevice_ctx_alloc(encoder_->device_type_);
     if (!hw_device_ctx_) {
@@ -185,7 +194,13 @@ public:
       return false;
     }
 
-    if ((ret = avcodec_open2(c_, codec, NULL)) < 0) {
+    if (util_encode::open_fail_injected(tried_)) {
+      ret = AVERROR(EIO);
+    } else {
+      ret = avcodec_open2(c_, codec, NULL);
+    }
+    if (ret < 0) {
+      open_failed_ = true;
       LOG_ERROR(std::string("avcodec_open2 failed, ret = ") + av_err2str(ret) +
                 ", name: " + encoder_->name_);
       return false;
@@ -294,14 +309,25 @@ public:
   }
 
   int set_bitrate(int kbs) {
-    return util_encode::change_bit_rate(c_, encoder_->name_, kbs) ? 0 : -1;
+    if (legacy_)
+      return util_encode::change_bit_rate(c_, encoder_->name_, kbs) ? 0 : -1;
+    if (kbs > 0)
+      kbs_ = kbs;
+    return util_encode::change_bit_rate(c_, encoder_->name_, kbs, framerate_)
+               ? 0
+               : -1;
   }
 
   int set_framerate(int framerate) {
     if (framerate <= 0)
       return -1;
+    framerate_ = framerate;
     c_->framerate = av_make_q(framerate, 1);
-    return 0;
+    if (legacy_)
+      return 0;
+    return util_encode::change_bit_rate(c_, encoder_->name_, kbs_, framerate_)
+               ? 0
+               : -1;
   }
 
 private:
@@ -478,20 +504,41 @@ FFmpegVRamEncoder *ffmpeg_vram_new_encoder(void *handle, int64_t luid,
                                            DataFormat dataFormat, int32_t width,
                                            int32_t height, int32_t kbs,
                                            int32_t framerate, int32_t gop) noexcept {
-  try {
-    std::unique_ptr<FFmpegVRamEncoder, decltype(&ffmpeg_vram_destroy_encoder)> encoder(
-        new FFmpegVRamEncoder(handle, luid, dataFormat, width,
-                              height, kbs, framerate, gop),
-        ffmpeg_vram_destroy_encoder);
-    if (encoder) {
-      if (encoder->init()) {
-        return encoder.release();
+  int tried = 0;
+  // the encoder name is known after the first (failed) init, it decides whether
+  // the "without low_power" attempt applies
+  std::string name;
+  for (int attempt = 0; attempt < OPEN_ATTEMPTS; attempt++) {
+    bool legacy = false, no_low_power = false;
+    if (!util_encode::open_attempt(name, attempt, &legacy, &no_low_power))
+      continue;
+    bool open_failed = false;
+    try {
+      std::unique_ptr<FFmpegVRamEncoder, decltype(&ffmpeg_vram_destroy_encoder)> encoder(
+          new FFmpegVRamEncoder(handle, luid, dataFormat, width,
+                                height, kbs, framerate, gop),
+          ffmpeg_vram_destroy_encoder);
+      if (encoder) {
+        encoder->tried_ = tried;
+        encoder->legacy_ = legacy;
+        encoder->no_low_power_ = no_low_power;
+        if (encoder->init()) {
+          util_encode::set_last_open_attempt(attempt);
+          return encoder.release();
+        }
+        open_failed = encoder->open_failed_;
+        if (encoder->encoder_)
+          name = encoder->encoder_->name_;
       }
+    } catch (const std::exception &e) {
+      LOG_ERROR(std::string("new FFmpegVRamEncoder failed, ") + std::string(e.what()));
+    } catch (...) {
+      LOG_ERROR("ffmpeg_vram_new_encoder: unknown exception");
     }
-  } catch (const std::exception &e) {
-    LOG_ERROR(std::string("new FFmpegVRamEncoder failed, ") + std::string(e.what()));
-  } catch (...) {
-    LOG_ERROR("ffmpeg_vram_new_encoder: unknown exception");
+    if (!open_failed)
+      break;
+    tried++;
+    LOG_WARN("open failed with low-latency options, retry (vram)");
   }
   return NULL;
 }

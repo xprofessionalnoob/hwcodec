@@ -122,6 +122,13 @@ public:
   AVBufferRef *hw_device_ctx_ = NULL;
   AVFrame *hw_frame_ = NULL;
 
+  // low-latency open attempt, see util_encode::open_attempt
+  int attempt_ = 0;
+  int tried_ = 0;
+  bool legacy_ = false;
+  bool no_low_power_ = false;
+  bool open_failed_ = false;
+
   FFmpegRamEncoder(const char *name, const char *mc_name, int width, int height,
                    int pixfmt, int align, int fps, int gop, int rc, int quality,
                    int kbs, int q, int thread_count, int gpu,
@@ -240,6 +247,9 @@ public:
     util_encode::set_gpu(c_->priv_data, name_, gpu_);
     util_encode::force_hw(c_->priv_data, name_);
     util_encode::set_others(c_->priv_data, name_);
+    util_encode::set_low_latency(c_, name_, fps_, legacy_, nullptr,
+                                 no_low_power_);
+    util_encode::apply_env_overrides(c_, name_);
     if (name_.find("mediacodec") != std::string::npos) {
       if (mc_name_.length() > 0) {
         LOG_INFO(std::string("mediacodec codec_name: ") + mc_name_);
@@ -250,7 +260,13 @@ public:
       }
     }
 
-    if ((ret = avcodec_open2(c_, codec, NULL)) < 0) {
+    if (util_encode::open_fail_injected(tried_)) {
+      ret = AVERROR(EIO);
+    } else {
+      ret = avcodec_open2(c_, codec, NULL);
+    }
+    if (ret < 0) {
+      open_failed_ = true;
       LOG_ERROR(std::string("avcodec_open2 failed, ret = ") + av_err2str(ret) +
                 ", name: " + name_);
       return false;
@@ -304,7 +320,20 @@ public:
   }
 
   int set_bitrate(int kbs) {
-    return util_encode::change_bit_rate(c_, name_, kbs) ? 0 : -1;
+    if (legacy_)
+      return util_encode::change_bit_rate(c_, name_, kbs) ? 0 : -1;
+    if (kbs > 0)
+      kbs_ = kbs;
+    return util_encode::change_bit_rate(c_, name_, kbs, fps_) ? 0 : -1;
+  }
+
+  int set_framerate(int fps) {
+    if (fps <= 0)
+      return -1;
+    fps_ = fps;
+    if (legacy_)
+      return 0;
+    return util_encode::change_bit_rate(c_, name_, kbs_, fps_) ? 0 : -1;
   }
 
 private:
@@ -414,24 +443,40 @@ ffmpeg_ram_new_encoder(const char *name, const char *mc_name, int width,
                        int gpu, int *linesize, int *offset, int *length,
                        RamEncodeCallback callback) {
   FFmpegRamEncoder *encoder = NULL;
-  try {
-    encoder = new FFmpegRamEncoder(name, mc_name, width, height, pixfmt, align,
-                                   fps, gop, rc, quality, kbs, q, thread_count,
-                                   gpu, callback);
-    if (encoder) {
+  int tried = 0;
+  for (int attempt = 0; attempt < OPEN_ATTEMPTS; attempt++) {
+    bool legacy = false, no_low_power = false;
+    if (!util_encode::open_attempt(name, attempt, &legacy, &no_low_power))
+      continue;
+    bool open_failed = false;
+    try {
+      encoder = new FFmpegRamEncoder(name, mc_name, width, height, pixfmt,
+                                     align, fps, gop, rc, quality, kbs, q,
+                                     thread_count, gpu, callback);
+      encoder->attempt_ = attempt;
+      encoder->tried_ = tried;
+      encoder->legacy_ = legacy;
+      encoder->no_low_power_ = no_low_power;
       if (encoder->init(linesize, offset, length)) {
+        util_encode::set_last_open_attempt(attempt);
         return encoder;
       }
+      open_failed = encoder->open_failed_;
+    } catch (const std::exception &e) {
+      LOG_ERROR(std::string("new FFmpegRamEncoder failed, ") + std::string(e.what()));
+    } catch (...) {
+      LOG_ERROR("ffmpeg_ram_new_encoder: unknown exception");
     }
-  } catch (const std::exception &e) {
-    LOG_ERROR(std::string("new FFmpegRamEncoder failed, ") + std::string(e.what()));
-  } catch (...) {
-    LOG_ERROR("ffmpeg_ram_new_encoder: unknown exception");
-  }
-  if (encoder) {
-    encoder->free_encoder();
-    delete encoder;
-    encoder = NULL;
+    if (encoder) {
+      encoder->free_encoder();
+      delete encoder;
+      encoder = NULL;
+    }
+    // only a failed avcodec_open2 can depend on the new options
+    if (!open_failed)
+      break;
+    tried++;
+    LOG_WARN(std::string("open failed with low-latency options, retry, name: ") + name);
   }
   return NULL;
 }
@@ -469,6 +514,17 @@ extern "C" int ffmpeg_ram_set_bitrate(FFmpegRamEncoder *encoder, int kbs) {
     LOG_ERROR(std::string("ffmpeg_ram_set_bitrate failed, ") + std::string(e.what()));
   } catch (...) {
     LOG_ERROR("ffmpeg_ram_set_bitrate: unknown exception");
+  }
+  return -1;
+}
+
+extern "C" int ffmpeg_ram_set_framerate(FFmpegRamEncoder *encoder, int fps) {
+  try {
+    return encoder->set_framerate(fps);
+  } catch (const std::exception &e) {
+    LOG_ERROR(std::string("ffmpeg_ram_set_framerate failed, ") + std::string(e.what()));
+  } catch (...) {
+    LOG_ERROR("ffmpeg_ram_set_framerate: unknown exception");
   }
   return -1;
 }

@@ -30,5 +30,6 @@ int ffmpeg_ram_get_linesize_offset_length(int pix_fmt, int width, int height,
                                           int align, int *linesize, int *offset,
                                           int *length);
 int ffmpeg_ram_set_bitrate(void *encoder, int kbs);
+int ffmpeg_ram_set_framerate(void *encoder, int fps);
 
 #endif // FFMPEG_RAM_FFI_H
