@@ -8,6 +8,7 @@ extern "C" {
 #include <libavutil/pixdesc.h>
 }
 
+#include <cstring>
 #include <memory>
 #include <stdbool.h>
 
@@ -23,6 +24,11 @@ extern "C" {
 #include "system.h"
 
 // #define CFG_PKG_TRACE
+
+// MediaCodec decodes asynchronously; wait this long for the frame of a packet.
+// The first frame takes longer (codec start), and the client needs it at once.
+#define MEDIACODEC_WAIT_MS 25
+#define MEDIACODEC_FIRST_WAIT_MS 1000
 
 namespace {
 typedef void (*RamDecodeCallback)(const void *obj, int width, int height,
@@ -44,6 +50,11 @@ public:
   int thread_count_ = 1;
   RamDecodeCallback callback_ = NULL;
   DataFormat data_format_;
+  // FFmpeg's *_mediacodec needs SPS/PPS when it opens, so it opens with the first packet.
+  bool mediacodec_ = false;
+  bool opened_ = false;
+  bool got_frame_ = false;
+  const AVCodec *codec_ = NULL;
 
 #ifdef CFG_PKG_TRACE
   int in_ = 0;
@@ -143,6 +154,14 @@ public:
       return -1;
     }
 
+    mediacodec_ = name_.find("mediacodec") != std::string::npos;
+    codec_ = codec;
+    opened_ = false;
+    got_frame_ = false;
+    if (mediacodec_) {
+      return 0;
+    }
+
     if ((ret = avcodec_open2(c_, codec, NULL)) != 0) {
       LOG_ERROR(std::string("avcodec_open2 failed, ret = ") + av_err2str(ret));
       return -1;
@@ -166,6 +185,15 @@ public:
       LOG_ERROR(std::string("illegal decode parameter"));
       return -1;
     }
+    if (mediacodec_ && !opened_ && open_with_extradata(data, length) != 0) {
+      // Keep the stream: the software decoder of the same format takes over.
+      std::string failed = name_;
+      name_ = data_format_ == DataFormat::H265 ? "hevc" : "h264";
+      LOG_WARN(failed + " failed to open, using " + name_);
+      if (reset() != 0) {
+        return -1;
+      }
+    }
     pkt_->data = (uint8_t *)data;
     pkt_->size = length;
     ret = do_decode(obj);
@@ -173,6 +201,44 @@ public:
   }
 
 private:
+  int open_with_extradata(const uint8_t *data, int length) {
+    av_freep(&c_->extradata);
+    c_->extradata_size = 0;
+    c_->extradata =
+        (uint8_t *)av_mallocz(length + AV_INPUT_BUFFER_PADDING_SIZE);
+    if (!c_->extradata) {
+      return -1;
+    }
+    memcpy(c_->extradata, data, length);
+    c_->extradata_size = length;
+    // MediaCodec rejects a 0x0 format, so take the size from the SPS.
+    set_size_from_packet(data, length);
+    int ret = avcodec_open2(c_, codec_, NULL);
+    if (ret != 0) {
+      LOG_ERROR(std::string("avcodec_open2 failed, ret = ") + av_err2str(ret));
+      return -1;
+    }
+    opened_ = true;
+    return 0;
+  }
+
+  void set_size_from_packet(const uint8_t *data, int length) {
+    AVCodecParserContext *parser = av_parser_init(codec_->id);
+    if (!parser) {
+      return;
+    }
+    parser->flags |= PARSER_FLAG_COMPLETE_FRAMES;
+    uint8_t *out = NULL;
+    int out_size = 0;
+    av_parser_parse2(parser, c_, &out, &out_size, data, length, AV_NOPTS_VALUE,
+                     AV_NOPTS_VALUE, 0);
+    if (parser->width > 0 && parser->height > 0) {
+      c_->width = parser->width;
+      c_->height = parser->height;
+    }
+    av_parser_close(parser);
+  }
+
   int do_decode(const void *obj) {
     int ret;
     AVFrame *tmp_frame = NULL;
@@ -186,6 +252,12 @@ private:
     auto start = util::now();
     while (ret >= 0 && util::elapsed_ms(start) < ENCODE_TIMEOUT_MS) {
       if ((ret = avcodec_receive_frame(c_, frame_)) != 0) {
+        if (ret == AVERROR(EAGAIN) && mediacodec_ && !decoded &&
+            util::elapsed_ms(start) < (got_frame_ ? MEDIACODEC_WAIT_MS
+                                                  : MEDIACODEC_FIRST_WAIT_MS)) {
+          ret = 0;
+          continue;
+        }
         if (ret != AVERROR(EAGAIN)) {
           LOG_ERROR(std::string("avcodec_receive_frame failed, ret = ") + av_err2str(ret));
         }
@@ -213,6 +285,7 @@ private:
         tmp_frame = frame_;
       }
       decoded = true;
+      got_frame_ = true;
 #ifdef CFG_PKG_TRACE
       out_++;
       LOG_DEBUG(std::string("delay DO: in:") + in_ + " out:" + out_);
@@ -229,6 +302,10 @@ private:
     }
   _exit:
     av_packet_unref(pkt_);
+    if (mediacodec_ && ret == AVERROR(EAGAIN)) {
+      // The frame comes with a later packet, that is not an error.
+      return 0;
+    }
     return decoded ? 0 : -1;
   }
 

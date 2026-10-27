@@ -93,3 +93,14 @@ Set by `set_low_latency()`; the option test passes on Linux for nvenc and amf (h
   "cbr with vbr" values.
 - Not measured on any GPU: encode time, rate peaks, sharpness, whether older drivers
   reject `tune=ull` (then the retry falls back to the old options).
+
+## MediaCodec decoder on Android (QualityPlan point 1)
+
+- `*_mediacodec` decoders open with the first packet: FFmpeg needs SPS/PPS
+  (`extradata` = the first packet) and a size other than 0x0 (taken from the
+  packet with the H.264/HEVC parser), otherwise `avcodec_open2` fails.
+- If that open fails, the same decoder object switches to the software decoder
+  of the format, so the client keeps its codec.
+- MediaCodec decodes asynchronously: `do_decode` waits up to 25 ms for the frame
+  of a packet (1 s for the first frame, the client drops a codec whose first
+  packet yields no picture). "No frame yet" is not an error for MediaCodec.
