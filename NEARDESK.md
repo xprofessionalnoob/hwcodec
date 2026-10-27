@@ -34,7 +34,7 @@ there is no user-facing switch. Every change below is one commit.
 
 ## VAAPI (Task 3.5)
 
-- `rc_mode=CBR`, `rc_max_rate = bit_rate`, `rc_buffer_size = 1.5 frames`, `low_power=1`
+- `rc_mode=VBR` capped by `rc_max_rate = bit_rate` (decided after the probe, see below), `rc_buffer_size = 1.5 frames`, `low_power=1`
   (retry with 0). Before: AVBR/VBR with a one second HRD buffer.
 - `hevc_vaapi` stays off. `NEARDESK_ENC_HEVC_VAAPI=1` adds it to `available_encoders()`
   for the investigation. Decision needs M6 at equal bitrate and a viewer that decodes
@@ -66,8 +66,8 @@ there is no user-facing switch. Every change below is one commit.
   (static, second half: 20046 kbit/s vs 9114 legacy). `rc_mode=VBR` with
   `rc_max_rate = bit_rate` keeps the peaks (`rate_window_max` 0.99-1.02) and uses far less
   on easy content (static 587 kbit/s, noise hevc 3310 kbit/s, scroll 18545 kbit/s);
-  `AVBR` is rejected by the driver. The app only encodes when the capture changes, so
-  CBR is kept as planned; VBR is the alternative if idle bandwidth matters.
+  `AVBR` is rejected by the driver. Decision (user, 2026-10-27): capped VBR, because
+  mobile clients pay for idle bandwidth and the peaks are the same.
 
 ## Key frame on request (Task 3.9)
 

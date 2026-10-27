@@ -425,7 +425,8 @@ bool set_low_latency(AVCodecContext *c, const std::string &name, int fps,
     vbv();
   } else if (has(name, "vaapi")) {
     if (c->bit_rate > 0) {
-      set_opt(priv, "rc_mode", "CBR", failed, &applied);
+      // VBR capped at the bitrate: same peaks as CBR, far less on easy content
+      set_opt(priv, "rc_mode", "VBR", failed, &applied);
       c->rc_max_rate = c->bit_rate;
     }
     set_opt(priv, "low_power", no_low_power ? "0" : "1", failed, &applied);

@@ -219,7 +219,7 @@ fn vaapi_vbv_is_one_and_a_half_frames() {
 }
 
 #[test]
-fn vaapi_sets_cbr_and_vbv() {
+fn vaapi_sets_capped_vbr_and_vbv() {
     for name in ["h264_vaapi", "hevc_vaapi"] {
         if !Ctx::exists(name) {
             continue;
@@ -229,7 +229,7 @@ fn vaapi_sets_cbr_and_vbv() {
         assert_eq!(c.get("rc_max_rate"), c.get("bit_rate"));
         assert!(c.get("rc_buffer_size") > 0);
         let reference = Ctx::new(name, 20000, 60);
-        assert_eq!(reference.opts("rc_mode=CBR"), 0);
+        assert_eq!(reference.opts("rc_mode=VBR"), 0);
         assert_eq!(c.opt("rc_mode"), reference.opt("rc_mode"));
         assert_eq!(c.opt("low_power"), "true");
     }
