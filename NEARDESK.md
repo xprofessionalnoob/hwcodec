@@ -78,3 +78,18 @@ there is no user-facing switch. Every change below is one commit.
   (need `forced-idr`/`forced_idr`, so not with the legacy option set).
 - Limit: `amf` in FFmpeg 7.1.1 ignores `pict_type`, so the request returns -1 and the app
   falls back to rebuilding the encoder.
+
+## NVENC, AMF, QSV (Tasks 3.6 - 3.8): options only, not measured
+
+Set by `set_low_latency()`; the option test passes on Linux for nvenc and amf (h264 and hevc),
+`qsv_options_exist` is `#[cfg(windows)]` and was not run.
+
+- nvenc: `preset=p4 tune=ull multipass=disabled zerolatency=1 rc-lookahead=0 forced-idr=1`,
+  `rc_max_rate = bit_rate`, `rc_buffer_size = 1 frame`.
+- amf: `usage=ultralowlatency quality=balanced filler_data=0 preanalysis=0`, frame skipping off
+  (`frame_skipping` for h264, `skip_frame` for hevc), `rc_buffer_size = 1 frame`.
+- qsv: `low_power=1` (retry `-1`), `preset=medium forced_idr=1 low_delay_brc=1
+  scenario=displayremoting`, `rc_buffer_size = 1 frame`; bit_rate/rc_max_rate keep the
+  "cbr with vbr" values.
+- Not measured on any GPU: encode time, rate peaks, sharpness, whether older drivers
+  reject `tune=ull` (then the retry falls back to the old options).

@@ -39,6 +39,16 @@ const ENCODERS: [&str; 6] = [
 struct Ctx(*mut c_void);
 
 impl Ctx {
+    /// The Linux FFmpeg has no qsv, the Windows one no vaapi: skip what is not built.
+    fn exists(name: &str) -> bool {
+        let n = CString::new(name).unwrap();
+        let p = unsafe { hwcodec_test_ctx_new(n.as_ptr(), 1000, 30) };
+        if p.is_null() {
+            return false;
+        }
+        unsafe { hwcodec_test_ctx_free(p) };
+        true
+    }
     fn new(name: &str, kbs: i32, fps: i32) -> Self {
         let _ = env_logger::builder().is_test(true).try_init();
         let n = CString::new(name).unwrap();
@@ -80,6 +90,9 @@ impl Drop for Ctx {
 #[test]
 fn options_exist_for_every_encoder() {
     for name in ENCODERS {
+        if !Ctx::exists(name) {
+            continue;
+        }
         for no_low_power in [false, true] {
             let c = Ctx::new(name, 20000, 60);
             assert_eq!(c.apply(60, false, no_low_power), 0, "{name}: option rejected");
@@ -90,6 +103,9 @@ fn options_exist_for_every_encoder() {
 #[test]
 fn nvenc_options_exist() {
     for name in ["h264_nvenc", "hevc_nvenc"] {
+        if !Ctx::exists(name) {
+            continue;
+        }
         let default = Ctx::new(name, 20000, 60);
         let c = Ctx::new(name, 20000, 60);
         assert_eq!(c.apply(60, false, false), 0);
@@ -103,6 +119,9 @@ fn nvenc_options_exist() {
 #[test]
 fn amf_options_exist() {
     for name in ["h264_amf", "hevc_amf"] {
+        if !Ctx::exists(name) {
+            continue;
+        }
         let default = Ctx::new(name, 20000, 60);
         let c = Ctx::new(name, 20000, 60);
         assert_eq!(c.apply(60, false, false), 0);
@@ -113,9 +132,29 @@ fn amf_options_exist() {
     }
 }
 
+// Only the Windows FFmpeg build contains qsv (needs no Intel GPU, only the encoder table).
+#[cfg(windows)]
+#[test]
+fn qsv_options_exist() {
+    for name in ["h264_qsv", "hevc_qsv"] {
+        if !Ctx::exists(name) {
+            continue;
+        }
+        let c = Ctx::new(name, 20000, 60);
+        assert_eq!(c.apply(60, false, false), 0);
+        assert_eq!(c.opt("forced_idr"), "true");
+        assert_eq!(c.opt("low_delay_brc"), "true");
+        let retry = Ctx::new(name, 20000, 60);
+        assert_eq!(retry.apply(60, false, true), 0);
+    }
+}
+
 #[test]
 fn legacy_sets_nothing() {
     for name in ENCODERS {
+        if !Ctx::exists(name) {
+            continue;
+        }
         let default = Ctx::new(name, 20000, 60);
         let c = Ctx::new(name, 20000, 60);
         assert_eq!(c.apply(60, true, false), 0);
@@ -134,6 +173,9 @@ fn legacy_sets_nothing() {
 
 #[test]
 fn env_overrides_parse() {
+    if !Ctx::exists("h264_nvenc") {
+        return;
+    }
     let c = Ctx::new("h264_nvenc", 20000, 60);
     assert_eq!(c.apply(60, false, false), 0);
     let tuned = c.opt("tune");
@@ -150,6 +192,9 @@ fn env_overrides_parse() {
 
 #[test]
 fn vbv_follows_bitrate_and_fps() {
+    if !Ctx::exists("h264_nvenc") {
+        return;
+    }
     let c = Ctx::new("h264_nvenc", 20000, 60);
     assert_eq!(c.apply(60, false, false), 0);
     assert_eq!(c.get("rc_buffer_size"), 333_333);
@@ -165,6 +210,9 @@ fn vbv_follows_bitrate_and_fps() {
 
 #[test]
 fn vaapi_vbv_is_one_and_a_half_frames() {
+    if !Ctx::exists("h264_vaapi") {
+        return;
+    }
     let c = Ctx::new("h264_vaapi", 20000, 60);
     assert_eq!(c.apply(60, false, false), 0);
     assert_eq!(c.get("rc_buffer_size"), 500_000); // 1.5 frames
@@ -173,6 +221,9 @@ fn vaapi_vbv_is_one_and_a_half_frames() {
 #[test]
 fn vaapi_sets_cbr_and_vbv() {
     for name in ["h264_vaapi", "hevc_vaapi"] {
+        if !Ctx::exists(name) {
+            continue;
+        }
         let c = Ctx::new(name, 20000, 60);
         assert_eq!(c.apply(60, false, false), 0);
         assert_eq!(c.get("rc_max_rate"), c.get("bit_rate"));
@@ -186,13 +237,16 @@ fn vaapi_sets_cbr_and_vbv() {
 
 #[test]
 fn vaapi_low_power_retry() {
+    if !Ctx::exists("h264_vaapi") {
+        return;
+    }
     let c = Ctx::new("h264_vaapi", 20000, 60);
     assert_eq!(c.apply(60, false, true), 0);
     assert_eq!(c.opt("low_power"), "false");
 }
 
 fn vaapi_device_present() -> bool {
-    std::path::Path::new("/dev/dri/renderD128").exists()
+    cfg!(target_os = "linux") && std::path::Path::new("/dev/dri/renderD128").exists()
 }
 
 fn open_vaapi() -> Result<hwcodec::ffmpeg_ram::encode::Encoder, ()> {
