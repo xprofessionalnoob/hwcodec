@@ -21,6 +21,7 @@ extern "C" {
     ) -> i32;
     fn hwcodec_test_ctx_free(ctx: *mut c_void);
     fn hwcodec_test_last_open_attempt() -> i32;
+    fn hwcodec_test_keyframe_cycle() -> i32;
 }
 
 // env vars are process wide
@@ -240,4 +241,35 @@ fn fallback_keeps_encoder_available() {
     std::env::set_var("NEARDESK_ENC_FORCE_OPEN_FAIL", "3");
     assert!(open_vaapi().is_err(), "all attempts failing must fail");
     std::env::remove_var("NEARDESK_ENC_FORCE_OPEN_FAIL");
+}
+
+#[test]
+fn keyframe_request_flag_is_reset() {
+    // bit 0: marked, bit 2: frame flagged; bit 1 (second mark) and bit 3 (flag after unmark) must be clear
+    assert_eq!(unsafe { hwcodec_test_keyframe_cycle() }, 1 | 4);
+}
+
+#[test]
+fn keyframe_flag_is_consumed() {
+    if !vaapi_device_present() {
+        eprintln!("skipped: no VAAPI render node");
+        return;
+    }
+    let _guard = ENV_LOCK.lock().unwrap();
+    std::env::remove_var("NEARDESK_ENC_FORCE_OPEN_FAIL");
+    let mut enc = open_vaapi().expect("vaapi encoder");
+    let mut buf = vec![0u8; enc.length as usize];
+    let mut keys = vec![];
+    for i in 0..12i64 {
+        if i == 6 {
+            assert!(enc.request_keyframe());
+        }
+        for (n, b) in buf.iter_mut().enumerate() {
+            *b = ((n as i64 * 7 + i * 13) % 200) as u8 + 16;
+        }
+        let frames = enc.encode(&buf, i * 16).expect("encode");
+        assert_eq!(frames.len(), 1);
+        keys.push(frames[0].key);
+    }
+    assert_eq!(keys, vec![1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0]);
 }

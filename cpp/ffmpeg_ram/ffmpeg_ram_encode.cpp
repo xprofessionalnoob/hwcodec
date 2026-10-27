@@ -128,6 +128,7 @@ public:
   bool legacy_ = false;
   bool no_low_power_ = false;
   bool open_failed_ = false;
+  util_encode::KeyframeRequest keyframe_;
 
   FFmpegRamEncoder(const char *name, const char *mc_name, int width, int height,
                    int pixfmt, int align, int fps, int gop, int rc, int quality,
@@ -327,6 +328,13 @@ public:
     return util_encode::change_bit_rate(c_, name_, kbs, fps_) ? 0 : -1;
   }
 
+  int request_keyframe() {
+    if (!util_encode::can_force_idr(name_, legacy_))
+      return -1;
+    keyframe_.request();
+    return 0;
+  }
+
   int set_framerate(int fps) {
     if (fps <= 0)
       return -1;
@@ -369,7 +377,10 @@ private:
     int ret;
     bool encoded = false;
     frame->pts = ms;
-    if ((ret = avcodec_send_frame(c_, frame)) < 0) {
+    keyframe_.mark(frame);
+    ret = avcodec_send_frame(c_, frame);
+    util_encode::KeyframeRequest::unmark(frame);
+    if (ret < 0) {
       LOG_ERROR(std::string("avcodec_send_frame failed, ret = ") + av_err2str(ret));
       return ret;
     }
@@ -525,6 +536,17 @@ extern "C" int ffmpeg_ram_set_framerate(FFmpegRamEncoder *encoder, int fps) {
     LOG_ERROR(std::string("ffmpeg_ram_set_framerate failed, ") + std::string(e.what()));
   } catch (...) {
     LOG_ERROR("ffmpeg_ram_set_framerate: unknown exception");
+  }
+  return -1;
+}
+
+extern "C" int ffmpeg_ram_request_keyframe(FFmpegRamEncoder *encoder) {
+  try {
+    return encoder->request_keyframe();
+  } catch (const std::exception &e) {
+    LOG_ERROR(std::string("ffmpeg_ram_request_keyframe failed, ") + std::string(e.what()));
+  } catch (...) {
+    LOG_ERROR("ffmpeg_ram_request_keyframe: unknown exception");
   }
   return -1;
 }

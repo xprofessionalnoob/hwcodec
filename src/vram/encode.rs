@@ -126,6 +126,11 @@ impl Encoder {
         }
     }
 
+    /// Marks the next frame as IDR. `false` if this encoder cannot force one (amf).
+    pub fn request_keyframe(&mut self) -> bool {
+        unsafe { ffmpeg::ffmpeg_vram_request_keyframe(self.codec) == 0 }
+    }
+
     pub fn set_framerate(&mut self, framerate: i32) -> Result<(), i32> {
         unsafe {
             match ffmpeg::ffmpeg_vram_set_framerate(self.codec, framerate) {

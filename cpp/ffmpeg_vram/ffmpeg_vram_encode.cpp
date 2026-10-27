@@ -88,6 +88,7 @@ public:
   bool legacy_ = false;
   bool no_low_power_ = false;
   bool open_failed_ = false;
+  util_encode::KeyframeRequest keyframe_;
 
   const int align_ = 0;
   const bool full_range_ = false;
@@ -318,6 +319,13 @@ public:
                : -1;
   }
 
+  int request_keyframe() {
+    if (!encoder_ || !util_encode::can_force_idr(encoder_->name_, legacy_))
+      return -1;
+    keyframe_.request();
+    return 0;
+  }
+
   int set_framerate(int framerate) {
     if (framerate <= 0)
       return -1;
@@ -384,7 +392,10 @@ private:
     int ret;
     bool encoded = false;
     frame_->pts = ms;
-    if ((ret = avcodec_send_frame(c_, frame_)) < 0) {
+    keyframe_.mark(frame_);
+    ret = avcodec_send_frame(c_, frame_);
+    util_encode::KeyframeRequest::unmark(frame_);
+    if (ret < 0) {
       LOG_ERROR(std::string("avcodec_send_frame failed, ret = ") + av_err2str(ret));
       return ret;
     }
@@ -599,6 +610,17 @@ int ffmpeg_vram_set_framerate(FFmpegVRamEncoder *encoder, int32_t framerate) noe
     LOG_ERROR(std::string("ffmpeg_vram_set_framerate failed, ") + std::string(e.what()));
   } catch (...) {
     LOG_ERROR("ffmpeg_vram_set_framerate: unknown exception");
+  }
+  return -1;
+}
+
+int ffmpeg_vram_request_keyframe(FFmpegVRamEncoder *encoder) noexcept {
+  try {
+    return encoder->request_keyframe();
+  } catch (const std::exception &e) {
+    LOG_ERROR(std::string("ffmpeg_vram_request_keyframe failed, ") + std::string(e.what()));
+  } catch (...) {
+    LOG_ERROR("ffmpeg_vram_request_keyframe: unknown exception");
   }
   return -1;
 }

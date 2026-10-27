@@ -50,6 +50,33 @@ void vram_encode_test_callback(const uint8_t *data, int32_t len, int32_t key, co
 
 } // namespace util
 
+namespace util_encode {
+
+// One pending key frame request. mark() turns the next input frame into an IDR
+// request and clears the request, unmark() resets the (reused) input frame.
+struct KeyframeRequest {
+  bool pending = false;
+  void request() { pending = true; }
+  bool mark(AVFrame *f) {
+    if (!pending)
+      return false;
+    pending = false;
+    f->pict_type = AV_PICTURE_TYPE_I;
+    f->flags |= AV_FRAME_FLAG_KEY;
+    return true;
+  }
+  static void unmark(AVFrame *f) {
+    f->pict_type = AV_PICTURE_TYPE_NONE;
+    f->flags &= ~AV_FRAME_FLAG_KEY;
+  }
+};
+
+// Whether a forced IDR works with this encoder and option set. amf (FFmpeg 7.1.1)
+// ignores pict_type, nvenc and qsv need forced-idr/forced_idr from set_low_latency.
+bool can_force_idr(const std::string &name, bool legacy);
+
+} // namespace util_encode
+
 namespace util_decode {
     bool has_flag_could_not_find_ref_with_poc();
 }

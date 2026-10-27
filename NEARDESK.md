@@ -68,3 +68,13 @@ there is no user-facing switch. Every change below is one commit.
   on easy content (static 587 kbit/s, noise hevc 3310 kbit/s, scroll 18545 kbit/s);
   `AVBR` is rejected by the driver. The app only encodes when the capture changes, so
   CBR is kept as planned; VBR is the alternative if idle bandwidth matters.
+
+## Key frame on request (Task 3.9)
+
+- `ffmpeg_ram_request_keyframe` / `ffmpeg_vram_request_keyframe` (0 = pending, -1 = not
+  possible). The next input frame gets `pict_type = I` and `AV_FRAME_FLAG_KEY`, then
+  both are reset (`util_encode::KeyframeRequest`).
+- Works with vaapi (verified: key, 5 non-key, request, key, 5 non-key), nvenc and qsv
+  (need `forced-idr`/`forced_idr`, so not with the legacy option set).
+- Limit: `amf` in FFmpeg 7.1.1 ignores `pict_type`, so the request returns -1 and the app
+  falls back to rebuilding the encoder.

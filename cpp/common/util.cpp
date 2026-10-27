@@ -572,6 +572,14 @@ std::atomic<int> g_last_open_attempt{-1};
 void set_last_open_attempt(int attempt) { g_last_open_attempt.store(attempt); }
 int last_open_attempt() { return g_last_open_attempt.load(); }
 
+bool can_force_idr(const std::string &name, bool legacy) {
+  if (has(name, "vaapi"))
+    return true;
+  if (has(name, "nvenc") || has(name, "qsv"))
+    return !legacy;
+  return false;
+}
+
 bool change_bit_rate(AVCodecContext *c, const std::string &name, int kbs,
                      int fps) {
   if (!change_bit_rate(c, name, kbs))
@@ -684,6 +692,28 @@ int hwcodec_test_ctx_get_opt(void *ctx, const char *key, char *out, int len) {
 void hwcodec_test_ctx_free(void *ctx) {
   AVCodecContext *c = (AVCodecContext *)ctx;
   avcodec_free_context(&c);
+}
+
+// Returns bit 0: first mark() hit, bit 1: second mark() hit (must be 0),
+// bit 2: frame flagged as key after mark(), bit 3: frame still flagged after unmark().
+int hwcodec_test_keyframe_cycle() {
+  AVFrame *f = av_frame_alloc();
+  if (!f)
+    return -1;
+  util_encode::KeyframeRequest kf;
+  int r = 0;
+  kf.request();
+  if (kf.mark(f))
+    r |= 1;
+  if (f->pict_type == AV_PICTURE_TYPE_I && (f->flags & AV_FRAME_FLAG_KEY))
+    r |= 4;
+  util_encode::KeyframeRequest::unmark(f);
+  if (f->pict_type != AV_PICTURE_TYPE_NONE || (f->flags & AV_FRAME_FLAG_KEY))
+    r |= 8;
+  if (kf.mark(f))
+    r |= 2;
+  av_frame_free(&f);
+  return r;
 }
 
 int hwcodec_test_last_open_attempt() { return util_encode::last_open_attempt(); }

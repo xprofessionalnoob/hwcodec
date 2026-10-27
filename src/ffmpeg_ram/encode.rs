@@ -6,7 +6,8 @@ use crate::{
     ffmpeg::{init_av_log, AVPixelFormat},
     ffmpeg_ram::{
         ffmpeg_linesize_offset_length, ffmpeg_ram_encode, ffmpeg_ram_free_encoder,
-        ffmpeg_ram_new_encoder, ffmpeg_ram_set_bitrate, ffmpeg_ram_set_framerate, CodecInfo, AV_NUM_DATA_POINTERS,
+        ffmpeg_ram_new_encoder, ffmpeg_ram_request_keyframe, ffmpeg_ram_set_bitrate,
+        ffmpeg_ram_set_framerate, CodecInfo, AV_NUM_DATA_POINTERS,
     },
 };
 use log::trace;
@@ -148,6 +149,11 @@ impl Encoder {
         } else {
             Err(())
         }
+    }
+
+    /// Marks the next frame as IDR. `false` if this encoder cannot force one (amf).
+    pub fn request_keyframe(&mut self) -> bool {
+        unsafe { ffmpeg_ram_request_keyframe(self.codec) == 0 }
     }
 
     pub fn set_framerate(&mut self, fps: i32) -> Result<(), ()> {
